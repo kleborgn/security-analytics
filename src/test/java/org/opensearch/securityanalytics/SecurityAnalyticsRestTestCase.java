@@ -5,16 +5,17 @@
 package org.opensearch.securityanalytics;
 
 import java.util.Set;
-import org.apache.http.HttpHost;
 import java.util.ArrayList;
 import java.util.function.BiConsumer;
 import java.nio.file.Path;
-import org.apache.http.Header;
-import org.apache.http.HttpEntity;
-import org.apache.http.HttpStatus;
-import org.apache.http.entity.ContentType;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.message.BasicHeader;
+
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.Header;
+import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.HttpStatus;
+import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.http.message.BasicHeader;
 import org.junit.Assert;
 import org.junit.After;
 import org.junit.Before;
@@ -34,12 +35,12 @@ import org.opensearch.common.UUIDs;
 import org.opensearch.common.collect.ImmutableOpenMap;
 import org.opensearch.common.io.PathUtils;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.xcontent.DeprecationHandler;
-import org.opensearch.common.xcontent.NamedXContentRegistry;
-import org.opensearch.common.xcontent.ToXContent;
-import org.opensearch.common.xcontent.XContentBuilder;
 import org.opensearch.common.xcontent.XContentFactory;
-import org.opensearch.common.xcontent.XContentParser;
+import org.opensearch.core.xcontent.DeprecationHandler;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.common.xcontent.XContentParserUtils;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.common.xcontent.json.JsonXContent;
@@ -55,7 +56,9 @@ import org.opensearch.securityanalytics.action.AlertDto;
 import org.opensearch.securityanalytics.action.CreateIndexMappingsRequest;
 import org.opensearch.securityanalytics.action.UpdateIndexMappingsRequest;
 import org.opensearch.securityanalytics.config.monitors.DetectorMonitorConfig;
+import org.opensearch.securityanalytics.correlation.index.query.CorrelationQueryBuilder;
 import org.opensearch.securityanalytics.mapper.MappingsTraverser;
+import org.opensearch.securityanalytics.model.CorrelationRule;
 import org.opensearch.securityanalytics.model.Detector;
 import org.opensearch.securityanalytics.model.Rule;
 import org.opensearch.test.rest.OpenSearchRestTestCase;
@@ -139,6 +142,14 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
         return (List<Object>) responseBody.get("index_templates");
     }
 
+    @SuppressWarnings("unchecked")
+    protected List<Map<String, Object>> searchCorrelatedFindings(String findingId, String detectorType, long timeWindow, int nearestFindings) throws IOException {
+        Response response = makeRequest(client(), "GET", "/_plugins/_security_analytics/findings/correlate", Map.of("finding", findingId, "detector_type", detectorType,
+                        "time_window", String.valueOf(timeWindow), "nearby_findings", String.valueOf(nearestFindings)),
+                null, new BasicHeader("Content-Type", "application/json"));
+        return (List<Map<String, Object>>) entityAsMap(response).get("findings");
+    }
+
     @Before
     void setDebugLogLevel() throws IOException {
         StringEntity se = new StringEntity("{\n" +
@@ -182,7 +193,7 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
 
     protected String createTestIndex(RestClient client, String index, String mapping, Settings settings) throws IOException {
         Request request = new Request("PUT", "/" + index);
-        String entity = "{\"settings\": " + Strings.toString(settings);
+        String entity = "{\"settings\": " + Strings.toString(XContentType.JSON, settings);
         if (mapping != null) {
             entity = entity + ",\"mappings\" : {" + mapping + "}";
         }
@@ -225,6 +236,64 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
         return client.performRequest(request);
     }
 
+    protected Settings getCorrelationDefaultIndexSettings() {
+        return Settings.builder().put("number_of_shards", 1).put("number_of_replicas", 0).put("index.correlation", true).build();
+    }
+
+    protected String createTestIndexWithMappingJson(RestClient client, String index, String mapping, Settings settings) throws IOException {
+        Request request = new Request("PUT", "/" + index);
+        String entity = "{\"settings\": " + Strings.toString(XContentType.JSON, settings);
+        if (mapping != null) {
+            entity = entity + ",\"mappings\" : " + mapping;
+        }
+
+        entity = entity + "}";
+        if (!settings.getAsBoolean(IndexSettings.INDEX_SOFT_DELETES_SETTING.getKey(), true)) {
+            expectSoftDeletesWarning(request, index);
+        }
+
+        request.setJsonEntity(entity);
+        client.performRequest(request);
+        return index;
+    }
+
+    protected void addCorrelationDoc(String index, String docId, List<String> fieldNames, List<Object> vectors) throws IOException {
+        Request request = new Request("POST", "/" + index + "/_doc/" + docId + "?refresh=true");
+
+        XContentBuilder builder = XContentFactory.jsonBuilder().startObject();
+        for (int i = 0; i < fieldNames.size(); i++) {
+            builder.field(fieldNames.get(i), vectors.get(i));
+        }
+        builder.endObject();
+
+        request.setJsonEntity(Strings.toString(builder));
+        Response response = client().performRequest(request);
+        assertEquals(request.getEndpoint() + ": failed", RestStatus.CREATED, RestStatus.fromCode(response.getStatusLine().getStatusCode()));
+    }
+
+    protected int getDocCount(String index) throws IOException {
+        Response response = makeRequest(client(), "GET", String.format(Locale.getDefault(), "/%s/_count", index), Collections.emptyMap(), null);
+        Assert.assertEquals(RestStatus.OK, restStatus(response));
+        return Integer.parseInt(entityAsMap(response).get("count").toString());
+    }
+
+    protected Response searchCorrelationIndex(String index, CorrelationQueryBuilder correlationQueryBuilder, int resultSize) throws IOException {
+        XContentBuilder builder = XContentFactory.jsonBuilder().startObject().startObject("query");
+        correlationQueryBuilder.doXContent(builder, ToXContent.EMPTY_PARAMS);
+        builder.endObject().endObject();
+
+        Request request = new Request("POST", "/" + index + "/_search");
+
+        request.addParameter("size", Integer.toString(resultSize));
+        request.addParameter("explain", Boolean.toString(true));
+        request.addParameter("search_type", "query_then_fetch");
+        request.setJsonEntity(Strings.toString(builder));
+
+        Response response = client().performRequest(request);
+        Assert.assertEquals("Search failed", RestStatus.OK, restStatus(response));
+        return response;
+    }
+
     protected Boolean doesIndexExist(String index) throws IOException {
         Response response = makeRequest(client(), "HEAD", String.format(Locale.getDefault(), "/%s", index), Collections.emptyMap(), null);
         return RestStatus.OK.equals(restStatus(response));
@@ -236,6 +305,18 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
 
     protected Response executeAlertingMonitor(RestClient client, String monitorId, Map<String, String> params) throws IOException {
         return makeRequest(client, "POST", String.format(Locale.getDefault(), "/_plugins/_alerting/monitors/%s/_execute", monitorId), params, null);
+    }
+
+    protected Response deleteAlertingMonitorIndex() throws IOException {
+        return makeRequest(client(), "DELETE", String.format(Locale.getDefault(), "/.opendistro-alerting-config"), new HashMap<>(), null);
+    }
+
+    protected Response deleteAlertingMonitor(String monitorId) throws IOException {
+        return deleteAlertingMonitor(client(), monitorId);
+    }
+
+    protected Response deleteAlertingMonitor(RestClient client, String monitorId) throws IOException {
+        return makeRequest(client, "DELETE", String.format(Locale.getDefault(), "/_plugins/_alerting/monitors/%s", monitorId), new HashMap<>(), null);
     }
 
     protected List<SearchHit> executeSearch(String index, String request) throws IOException {
@@ -477,6 +558,10 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
         return new StringEntity(toJsonString(request), ContentType.APPLICATION_JSON);
     }
 
+    protected HttpEntity toHttpEntity(CorrelationRule rule) throws IOException {
+        return new StringEntity(toJsonString(rule), ContentType.APPLICATION_JSON);
+    }
+
     protected RestStatus restStatus(Response response) {
         return RestStatus.fromCode(response.getStatusLine().getStatusCode());
     }
@@ -503,6 +588,11 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
     private String toJsonString(UpdateIndexMappingsRequest request) throws IOException {
         XContentBuilder builder = XContentFactory.jsonBuilder();
         return IndexUtilsKt.string(shuffleXContent(request.toXContent(builder, ToXContent.EMPTY_PARAMS)));
+    }
+
+    protected String toJsonString(CorrelationRule rule) throws IOException {
+        XContentBuilder builder = XContentFactory.jsonBuilder();
+        return IndexUtilsKt.string(shuffleXContent(rule.toXContent(builder, ToXContent.EMPTY_PARAMS)));
     }
 
     private String alertingScheduledJobMappings() {
@@ -1224,7 +1314,7 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
 
         Response response = client().performRequest(new Request("GET", "/_cat/indices?format=json&expand_wildcards=all"));
 
-        XContentType xContentType = XContentType.fromMediaType(response.getEntity().getContentType().getValue());
+        XContentType xContentType = XContentType.fromMediaType(response.getEntity().getContentType());
         XContentParser parser = xContentType.xContent().createParser(
                 NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
                 response.getEntity().getContent()
