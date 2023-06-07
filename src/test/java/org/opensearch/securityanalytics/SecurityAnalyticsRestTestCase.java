@@ -32,7 +32,7 @@ import org.opensearch.cluster.ClusterModule;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.common.Strings;
 import org.opensearch.common.UUIDs;
-import org.opensearch.common.collect.ImmutableOpenMap;
+
 import org.opensearch.common.io.PathUtils;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentFactory;
@@ -80,6 +80,14 @@ import static org.opensearch.securityanalytics.SecurityAnalyticsPlugin.MAPPER_BA
 import static org.opensearch.securityanalytics.TestHelpers.sumAggregationTestRule;
 import static org.opensearch.securityanalytics.TestHelpers.productIndexAvgAggRule;
 import static org.opensearch.securityanalytics.TestHelpers.windowsIndexMapping;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.ALERT_HISTORY_INDEX_MAX_AGE;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.ALERT_HISTORY_MAX_DOCS;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.ALERT_HISTORY_RETENTION_PERIOD;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.ALERT_HISTORY_ROLLOVER_PERIOD;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.FINDING_HISTORY_INDEX_MAX_AGE;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.FINDING_HISTORY_MAX_DOCS;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.FINDING_HISTORY_RETENTION_PERIOD;
+import static org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings.FINDING_HISTORY_ROLLOVER_PERIOD;
 import static org.opensearch.securityanalytics.util.RuleTopicIndices.ruleTopicIndexSettings;
 
 public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
@@ -494,9 +502,8 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
 
             mappings.put(_indexName, new MappingMetadata(MapperService.SINGLE_MAPPING_NAME, fieldMappings));
         }
-        ImmutableOpenMap<String, MappingMetadata> immutableMappingsMap =
-                new ImmutableOpenMap.Builder<String, MappingMetadata>().putAll(mappings).build();
-        return new GetMappingsResponse(immutableMappingsMap);
+        Map<String, MappingMetadata> mappingsMap = new HashMap<>(mappings);
+        return new GetMappingsResponse(mappingsMap);
     }
 
     public Response searchAlertingFindings(Map<String, String> params) throws IOException {
@@ -1628,5 +1635,19 @@ public class SecurityAnalyticsRestTestCase extends OpenSearchRestTestCase {
         );
 
         createDatastreamAPI(datastreamName);
+    }
+
+
+    protected void restoreAlertsFindingsIMSettings() throws IOException {
+        updateClusterSetting(ALERT_HISTORY_ROLLOVER_PERIOD.getKey(), "720m");
+        updateClusterSetting(ALERT_HISTORY_MAX_DOCS.getKey(), "100000");
+        updateClusterSetting(ALERT_HISTORY_INDEX_MAX_AGE.getKey(), "60d");
+        updateClusterSetting(ALERT_HISTORY_RETENTION_PERIOD.getKey(), "60d");
+
+        updateClusterSetting(FINDING_HISTORY_ROLLOVER_PERIOD.getKey(), "720m");
+        updateClusterSetting(FINDING_HISTORY_MAX_DOCS.getKey(), "100000");
+        updateClusterSetting(FINDING_HISTORY_INDEX_MAX_AGE.getKey(), "60d");
+        updateClusterSetting(FINDING_HISTORY_RETENTION_PERIOD.getKey(), "60d");
+
     }
 }

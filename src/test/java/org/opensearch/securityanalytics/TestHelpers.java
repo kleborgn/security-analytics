@@ -21,6 +21,8 @@ import org.opensearch.commons.alerting.model.action.Throttle;
 import org.opensearch.commons.authuser.User;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptType;
+import org.opensearch.securityanalytics.model.CorrelationQuery;
+import org.opensearch.securityanalytics.model.CorrelationRule;
 import org.opensearch.securityanalytics.model.Detector;
 import org.opensearch.securityanalytics.model.DetectorInput;
 import org.opensearch.securityanalytics.model.DetectorRule;
@@ -144,6 +146,15 @@ public class TestHelpers {
         Instant lastUpdateTime = Instant.now().truncatedTo(ChronoUnit.MILLIS);
 
         return new Detector(null, null, name, enabled, schedule, lastUpdateTime, enabledTime, detectorType, null, inputs, Collections.emptyList(),Collections.singletonList(""), "", "", "", "", "", "", Collections.emptyMap());
+    }
+
+    public static CorrelationRule randomCorrelationRule(String name) {
+        name = name.isEmpty()? "><script>prompt(document.domain)</script>": name;
+        return new CorrelationRule(CorrelationRule.NO_ID, CorrelationRule.NO_VERSION, name,
+                List.of(
+                        new CorrelationQuery("vpc_flow1", "dstaddr:192.168.1.*", "network"),
+                        new CorrelationQuery("ad_logs1", "azure.platformlogs.result_type:50126", "ad_ldap")
+                ));
     }
 
     public static String randomRule() {
@@ -542,6 +553,7 @@ public class TestHelpers {
 
     public static String windowsIndexMapping() {
         return "\"properties\": {\n" +
+                "      \"@timestamp\": {\"type\":\"date\"},\n" +
                 "      \"AccessList\": {\n" +
                 "        \"type\": \"text\"\n" +
                 "      },\n" +
@@ -1204,6 +1216,7 @@ public class TestHelpers {
 
     public static String randomDoc() {
         return "{\n" +
+                "\"@timestamp\":\"2020-02-04T14:59:39.343541+00:00\",\n" +
                 "\"EventTime\":\"2020-02-04T14:59:39.343541+00:00\",\n" +
                 "\"HostName\":\"EC2AMAZ-EPO7HKA\",\n" +
                 "\"Keywords\":\"9223372036854775808\",\n" +
